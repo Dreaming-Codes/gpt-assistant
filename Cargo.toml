@@ -1,0 +1,9 @@
+[package]
+name = "gpt-assistant"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.29.0"
+iced = { version = "0.13.1", features = ["canvas", "multi-window", "wgpu"] }
+tokio = { version = "1.40.0", features = ["full"] }
