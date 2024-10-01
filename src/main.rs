@@ -164,6 +164,35 @@ fn listen_keyboard() -> impl Stream<Item=Message> {
                             }
                         }
                     },
+                    Key::KeyI if ctrl_pressed => {
+                        yield Message::SetState(State::Loading);
+                        yield Message::ShowText(None);
+
+                        let result: Result<String, OpenAIError> = async {
+                            let base64 = tokio::task::spawn_blocking(|| {
+                                let monitors = Monitor::all().map_err(|e| OpenAIError::Other(Box::new(e)))?;
+                                let monitor = monitors.first().ok_or_else(|| OpenAIError::Other("No monitors found".into()))?;
+                                let image = monitor.capture_image().map_err(|e| OpenAIError::Other(Box::new(e)))?;
+                                Ok::<_, OpenAIError>(image_to_base64(&image))
+                            })
+                            .await
+                            .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
+
+                            let answer = direct_answer_from_image(&client, base64).await?;
+
+                            Ok(answer)
+                        }.await;
+
+                        match result {
+                            Ok(answer) => {
+                                yield Message::SetState(State::Idle);
+                                yield Message::ShowText(Some(answer))
+                            },
+                            Err(_) => {
+                                yield Message::SetState(State::Error);
+                            }
+                        }
+                    },
                     Key::Alt | Key::AltGr => yield Message::ToggleVisibility,
                     _ => {}
                 },
@@ -172,6 +201,37 @@ fn listen_keyboard() -> impl Stream<Item=Message> {
             }
         }
     }
+}
+
+async fn direct_answer_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, OpenAIError> {
+    let request = CreateChatCompletionRequestArgs::default()
+        .model("gpt-4o")
+        .messages(vec![
+            ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(ChatCompletionRequestUserMessageContent::Array(vec![
+                        ChatCompletionRequestUserMessageContentPart::Text(
+                            ChatCompletionRequestMessageContentPartTextArgs::default()
+                                .text("Answer to the test in the image attached")
+                                .build().unwrap()
+                        ),
+                        ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                            ChatCompletionRequestMessageContentPartImageArgs::default()
+                                .image_url(base64)
+                                .build()
+                                .unwrap()
+                        )
+                    ]))
+                    .build()
+                    .unwrap()
+            )
+        ])
+        .build()
+        .unwrap();
+
+    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
+
+    Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
 }
 
 async fn extract_text_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, OpenAIError> {
