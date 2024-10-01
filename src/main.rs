@@ -323,7 +323,4 @@ pub enum OpenAIError {
 
     #[error(transparent)]
     ScreenshotError(#[from] XCapError),
-
-    #[error(transparent)]
-    Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
