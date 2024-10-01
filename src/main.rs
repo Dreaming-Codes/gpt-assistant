@@ -212,7 +212,7 @@ async fn direct_answer_from_image(client: &Client<OpenAIConfig>, base64: String)
                     .content(ChatCompletionRequestUserMessageContent::Array(vec![
                         ChatCompletionRequestUserMessageContentPart::Text(
                             ChatCompletionRequestMessageContentPartTextArgs::default()
-                                .text("Answer to the test in the image attached")
+                                .text("Answer to the test in the image attached, be concise and to the point")
                                 .build().unwrap()
                         ),
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(
