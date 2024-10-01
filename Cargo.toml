@@ -1,9 +1,22 @@
 [package]
-name = "gpt-assistant"
+name = "overlay"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.29.0"
-iced = { version = "0.13.1", features = ["canvas", "multi-window", "wgpu"] }
+async-openai = "0.24.1"
+async-stream = "0.3.5"
+futures-util = "0.3.30"
+iced = { version = "0.13.1", features = [
+    "wgpu",
+    "advanced",
+    "tokio",
+    "canvas",
+] }
+rdev = "0.5.3"
 tokio = { version = "1.40.0", features = ["full"] }
+tracing-subscriber = "0.3.18"
+xcap = "0.0.13"
+base64 = "0.22.1"
+image = "0.25.2"
+thiserror = "1.0.64"

@@ -15,7 +15,7 @@
             inherit system;
           };
           runtimeDeps = with pkgs; [
-            wayland libxkbcommon libGL
+            wayland libxkbcommon libGL xorg.libX11.dev xorg.libXi xorg.libXtst
           ];
         in {
           devShells.default = pkgs.mkShell rec {

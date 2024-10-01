@@ -1,277 +1,244 @@
+use async_openai::config::OpenAIConfig;
+use async_openai::types::*;
+use async_openai::Client;
+use async_stream::stream;
+use iced::futures::Stream;
 use iced::theme::Palette;
-use iced::widget::{button, container, horizontal_space, hover};
-use iced::{Color, Element, Fill, Theme};
+use iced::widget::{container, horizontal_space, Space, Text};
+use iced::{window, Color, Element, Point, Subscription, Task, Theme};
+use image::{ImageFormat, RgbaImage};
+use rdev::{listen, EventType, Key};
+use std::io::Cursor;
+use std::thread;
+use thiserror::Error;
+use tokio::sync::mpsc;
+use xcap::Monitor;
+
+// Predefined Colors
+const IDLE_COLOR: Color = Color::from_rgb(0.996, 0.871, 0.545);
+const LOADING_COLOR: Color = Color::from_rgb(0.0, 0.5, 0.0);
+const ERROR_COLOR: Color = Color::from_rgb(0.8, 0.0, 0.0);
 
 pub fn main() -> iced::Result {
-    iced::application("Bezier Tool - Iced", Example::update, Example::view)
-        .theme(|_| {
-            Theme::custom(
-                "main".to_string(),
-                Palette {
-                    background: Color::TRANSPARENT,
-                    ..Theme::default().palette()
-                },
-            )
-        })
-        .antialiasing(true)
-        .window(iced::window::Settings {
-            transparent: true,
-            resizable: false,
-            decorations: false,
-            level: iced::window::Level::AlwaysOnTop,
-            ..Default::default()
-        })
-        .run()
-}
-
-#[derive(Default)]
-struct Example {
-    bezier: bezier::State,
-    curves: Vec<bezier::Curve>,
-    visible: bool,
+    iced::application("overlay", Example::update, Example::view).theme(|_| Theme::custom(
+        "main".to_string(),
+        Palette {
+            background: Color::TRANSPARENT,
+            ..Theme::default().palette()
+        },
+    )).antialiasing(true).window(iced::window::Settings {
+        transparent: true,
+        resizable: false,
+        decorations: false,
+        level: iced::window::Level::AlwaysOnTop,
+        position: iced::window::Position::Specific(Point::new(0f32, 0f32)),
+        ..Default::default()
+    }).subscription(Example::keyboard_subscription).run_with(Example::new)
 }
 
 #[derive(Debug, Clone, Copy)]
+enum State {
+    Idle,
+    Error,
+    Loading,
+}
+
+struct Example {
+    visible: bool,
+    current_text: Option<String>,
+    state: State,
+}
+
+impl Default for Example {
+    fn default() -> Self {
+        Self {
+            visible: true,
+            current_text: None,
+            state: State::Idle,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 enum Message {
-    AddCurve(bezier::Curve),
-    Clear,
-    Toggle,
+    ShowText(Option<String>),
+    ToggleVisibility,
+    SetState(State),
 }
 
 impl Example {
+    fn new() -> (Self, Task<Message>) {
+        (
+            Self::default(),
+            window::get_latest().and_then(|window| {
+                Task::batch([
+                    window::change_mode(window, window::Mode::Fullscreen),
+                    window::enable_mouse_passthrough(window),
+                ])
+            }),
+        )
+    }
+
     fn update(&mut self, message: Message) {
         match message {
-            Message::AddCurve(curve) => {
-                self.curves.push(curve);
-                self.bezier.request_redraw();
-            }
-            Message::Clear => {
-                self.bezier = bezier::State::default();
-                self.curves.clear();
-            }
-            Message::Toggle => {
-                self.visible = !self.visible;
-            }
+            Message::ShowText(text) => self.current_text = text,
+            Message::SetState(state) => self.state = state,
+            Message::ToggleVisibility => self.visible = !self.visible,
         }
+    }
+
+    fn keyboard_subscription(&self) -> Subscription<Message> {
+        Subscription::run(listen_keyboard)
     }
 
     fn view(&self) -> Element<Message> {
         if self.visible {
-            container(hover(
-                self.bezier.view(&self.curves).map(Message::AddCurve),
-                if self.curves.is_empty() {
-                    container(horizontal_space())
-                } else {
-                    container(
-                        button("Toggle")
-                            .style(button::danger)
-                            .on_press(Message::Toggle),
-                    )
-                    .padding(10)
-                    .align_right(Fill)
-                },
-            ))
-            .into()
+            if let Some(text) = &self.current_text {
+                container(Text::new(text).size(20).color(Color::BLACK)).into()
+            } else {
+                container(Space::new(25, 25)).style(|t: &Theme| container::Style {
+                    background: Some(match self.state {
+                        State::Idle => IDLE_COLOR,
+                        State::Loading => LOADING_COLOR,
+                        State::Error => ERROR_COLOR,
+                    }.into()),
+                    ..container::transparent(t)
+                }).into()
+            }
         } else {
-            container(
-                button("Toggle")
-                    .style(button::danger)
-                    .on_press(Message::Toggle),
-            )
-            .into()
+            horizontal_space().into()
         }
     }
 }
 
-mod bezier {
-    use iced::mouse;
-    use iced::widget::canvas::event::{self, Event};
-    use iced::widget::canvas::{self, Canvas, Frame, Geometry, Path, Stroke};
-    use iced::{Element, Fill, Point, Rectangle, Renderer, Theme};
+fn image_to_base64(img: &RgbaImage) -> String {
+    let mut image_data: Vec<u8> = Vec::new();
+    img.write_to(&mut Cursor::new(&mut image_data), ImageFormat::Png).unwrap();
+    format!("data:image/png;base64,{}", base64::encode(image_data))
+}
 
-    #[derive(Default)]
-    pub struct State {
-        cache: canvas::Cache,
-    }
+fn listen_keyboard() -> impl Stream<Item=Message> {
+    let (schan, mut rchan) = mpsc::unbounded_channel();
+    let _listener = thread::spawn(move || {
+        listen(move |event| {
+            schan.send(event).unwrap_or_else(|e| println!("Could not send event {:?}", e));
+        }).expect("Could not listen");
+    });
 
-    impl State {
-        pub fn view<'a>(&'a self, curves: &'a [Curve]) -> Element<'a, Curve> {
-            Canvas::new(Bezier {
-                state: self,
-                curves,
-            })
-            .width(Fill)
-            .height(Fill)
-            .into()
-        }
+    let mut ctrl_pressed = false;
+    let client = Client::new();
 
-        pub fn request_redraw(&mut self) {
-            self.cache.clear();
-        }
-    }
+    stream! {
+        while let Some(event) = rchan.recv().await {
+            match event.event_type {
+                EventType::KeyPress(key) => match key {
+                    Key::ControlLeft => ctrl_pressed = true,
+                    Key::ControlRight => yield Message::ShowText(None),
+                    Key::KeyO if ctrl_pressed => {
+                        yield Message::SetState(State::Loading);
+                        yield Message::ShowText(None);
 
-    struct Bezier<'a> {
-        state: &'a State,
-        curves: &'a [Curve],
-    }
+                        let result: Result<String, OpenAIError> = async {
+                            let base64 = tokio::task::spawn_blocking(|| {
+                                let monitors = Monitor::all().map_err(|e| OpenAIError::Other(Box::new(e)))?;
+                                let monitor = monitors.first().ok_or_else(|| OpenAIError::Other("No monitors found".into()))?;
+                                let image = monitor.capture_image().map_err(|e| OpenAIError::Other(Box::new(e)))?;
+                                Ok::<_, OpenAIError>(image_to_base64(&image))
+                            })
+                            .await
+                            .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
 
-    impl<'a> canvas::Program<Curve> for Bezier<'a> {
-        type State = Option<Pending>;
+                            let quiz_text = extract_text_from_image(&client, base64).await?;
+                            let answer = get_exact_answer(&client, quiz_text).await?;
 
-        fn update(
-            &self,
-            state: &mut Self::State,
-            event: Event,
-            bounds: Rectangle,
-            cursor: mouse::Cursor,
-        ) -> (event::Status, Option<Curve>) {
-            let Some(cursor_position) = cursor.position_in(bounds) else {
-                return (event::Status::Ignored, None);
-            };
+                            Ok(answer)
+                        }.await;
 
-            match event {
-                Event::Mouse(mouse_event) => {
-                    let message = match mouse_event {
-                        mouse::Event::ButtonPressed(mouse::Button::Left) => match *state {
-                            None => {
-                                *state = Some(Pending::One {
-                                    from: cursor_position,
-                                });
-
-                                None
+                        match result {
+                            Ok(answer) => {
+                                yield Message::SetState(State::Idle);
+                                yield Message::ShowText(Some(answer))
+                            },
+                            Err(_) => {
+                                yield Message::SetState(State::Error);
                             }
-                            Some(Pending::One { from }) => {
-                                *state = Some(Pending::Two {
-                                    from,
-                                    to: cursor_position,
-                                });
-
-                                None
-                            }
-                            Some(Pending::Two { from, to }) => {
-                                *state = None;
-
-                                Some(Curve {
-                                    from,
-                                    to,
-                                    control: cursor_position,
-                                })
-                            }
-                        },
-                        _ => None,
-                    };
-
-                    (event::Status::Captured, message)
-                }
-                _ => (event::Status::Ignored, None),
-            }
-        }
-
-        fn draw(
-            &self,
-            state: &Self::State,
-            renderer: &Renderer,
-            theme: &Theme,
-            bounds: Rectangle,
-            cursor: mouse::Cursor,
-        ) -> Vec<Geometry> {
-            let content = self.state.cache.draw(renderer, bounds.size(), |frame| {
-                Curve::draw_all(self.curves, frame, theme);
-
-                frame.stroke(
-                    &Path::rectangle(Point::ORIGIN, frame.size()),
-                    Stroke::default()
-                        .with_width(2.0)
-                        .with_color(theme.palette().text),
-                );
-            });
-
-            if let Some(pending) = state {
-                vec![content, pending.draw(renderer, theme, bounds, cursor)]
-            } else {
-                vec![content]
-            }
-        }
-
-        fn mouse_interaction(
-            &self,
-            _state: &Self::State,
-            bounds: Rectangle,
-            cursor: mouse::Cursor,
-        ) -> mouse::Interaction {
-            if cursor.is_over(bounds) {
-                mouse::Interaction::Crosshair
-            } else {
-                mouse::Interaction::default()
+                        }
+                    },
+                    Key::Alt | Key::AltGr => yield Message::ToggleVisibility,
+                    _ => {}
+                },
+                EventType::KeyRelease(Key::ControlLeft | Key::ControlRight) => ctrl_pressed = false,
+                _ => {}
             }
         }
     }
+}
 
-    #[derive(Debug, Clone, Copy)]
-    pub struct Curve {
-        from: Point,
-        to: Point,
-        control: Point,
-    }
+async fn extract_text_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, OpenAIError> {
+    let request = CreateChatCompletionRequestArgs::default()
+        .model("gpt-4o")
+        .messages(vec![
+            ChatCompletionRequestMessage::System(
+                ChatCompletionRequestSystemMessageArgs::default()
+                    .content("Your task is to extract text from the quiz on screen. If there's an image, you should explain the content of it for someone to be able to answer the question without having to look at the image. If there are multiple choices, transcribe those too. Ignore other things on screen.")
+                    .build()
+                    .unwrap()
+            ),
+            ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(ChatCompletionRequestUserMessageContent::Array(vec![
+                        ChatCompletionRequestUserMessageContentPart::ImageUrl(
+                            ChatCompletionRequestMessageContentPartImageArgs::default()
+                                .image_url(base64)
+                                .build()
+                                .unwrap()
+                        )
+                    ]))
+                    .build()
+                    .unwrap()
+            )
+        ])
+        .build()
+        .unwrap();
 
-    impl Curve {
-        fn draw_all(curves: &[Curve], frame: &mut Frame, theme: &Theme) {
-            let curves = Path::new(|p| {
-                for curve in curves {
-                    p.move_to(curve.from);
-                    p.quadratic_curve_to(curve.control, curve.to);
-                }
-            });
+    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
 
-            frame.stroke(
-                &curves,
-                Stroke::default()
-                    .with_width(2.0)
-                    .with_color(theme.palette().text),
-            );
-        }
-    }
+    Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
+}
 
-    #[derive(Debug, Clone, Copy)]
-    enum Pending {
-        One { from: Point },
-        Two { from: Point, to: Point },
-    }
+async fn get_exact_answer(client: &Client<OpenAIConfig>, text: String) -> Result<String, OpenAIError> {
+    let request = CreateChatCompletionRequestArgs::default()
+        .model("o1-preview")
+        .messages(vec![
+            ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content("Your task is to provide only the exact answer without any explanations.")
+                    .build()
+                    .unwrap()
+            ),
+            ChatCompletionRequestMessage::User(
+                ChatCompletionRequestUserMessageArgs::default()
+                    .content(text)
+                    .build()
+                    .unwrap()
+            ),
+        ])
+        .build()
+        .unwrap();
 
-    impl Pending {
-        fn draw(
-            &self,
-            renderer: &Renderer,
-            theme: &Theme,
-            bounds: Rectangle,
-            cursor: mouse::Cursor,
-        ) -> Geometry {
-            let mut frame = Frame::new(renderer, bounds.size());
+    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
 
-            if let Some(cursor_position) = cursor.position_in(bounds) {
-                match *self {
-                    Pending::One { from } => {
-                        let line = Path::line(from, cursor_position);
-                        frame.stroke(
-                            &line,
-                            Stroke::default()
-                                .with_width(2.0)
-                                .with_color(theme.palette().text),
-                        );
-                    }
-                    Pending::Two { from, to } => {
-                        let curve = Curve {
-                            from,
-                            to,
-                            control: cursor_position,
-                        };
+    Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
+}
 
-                        Curve::draw_all(&[curve], &mut frame, theme);
-                    }
-                };
-            }
+#[derive(Error, Debug)]
+pub enum OpenAIError {
+    #[error("OpenAI API Error: {0}")]
+    ApiError(String),
 
-            frame.into_geometry()
-        }
-    }
+    #[error("Task Error: {0}")]
+    TaskError(String),
+
+    #[error(transparent)]
+    Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
