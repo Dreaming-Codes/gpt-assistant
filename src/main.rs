@@ -12,11 +12,10 @@ use std::io::Cursor;
 use std::thread;
 use async_openai::error::OpenAIError;
 use base64::Engine;
-use base64::prelude::BASE64_STANDARD_NO_PAD;
+use base64::engine::general_purpose::{STANDARD};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use xcap::{Monitor, XCapError};
-use log::error;
 
 // Predefined Colors
 const IDLE_COLOR: Color = Color::from_rgb(0.996, 0.871, 0.545);
@@ -118,7 +117,7 @@ impl Example {
 fn image_to_base64(img: &RgbaImage) -> String {
     let mut image_data: Vec<u8> = Vec::new();
     img.write_to(&mut Cursor::new(&mut image_data), ImageFormat::Png).unwrap();
-    format!("data:image/png;base64,{}", BASE64_STANDARD_NO_PAD.encode(image_data))
+    format!("data:image/png;base64,{}", STANDARD.encode(image_data))
 }
 
 fn listen_keyboard() -> impl Stream<Item = Message> {
@@ -171,7 +170,7 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                             msg_schan.send(Message::ShowText(Some(answer))).unwrap();
                                         },
                                         Err(e) => {
-                                            error!("Error getting answer: {:?}", e);
+                                            eprint!("Error getting answer: {:?}", e);
                                             msg_schan.send(Message::SetState(State::Error)).unwrap();
                                         }
                                     }
@@ -205,7 +204,7 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                             msg_schan.send(Message::ShowText(Some(answer))).unwrap();
                                         },
                                         Err(e) => {
-                                            error!("Error getting answer: {:?}", e);
+                                            eprint!("Error getting answer: {:?}", e);
                                             msg_schan.send(Message::SetState(State::Error)).unwrap();
                                         }
                                     }

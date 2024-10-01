@@ -3000,7 +3000,6 @@ dependencies = [
  "futures-util",
  "iced",
  "image",
- "log",
  "rdev",
  "thiserror",
  "tokio",
