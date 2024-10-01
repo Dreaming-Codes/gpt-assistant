@@ -23,7 +23,7 @@ const LOADING_COLOR: Color = Color::from_rgb(0.0, 0.5, 0.0);
 const ERROR_COLOR: Color = Color::from_rgb(0.8, 0.0, 0.0);
 
 pub fn main() -> iced::Result {
-    iced::application("overlay", Example::update, Example::view).theme(|_| Theme::custom(
+    iced::application("overlay", Assistant::update, Assistant::view).theme(|_| Theme::custom(
         "main".to_string(),
         Palette {
             background: Color::TRANSPARENT,
@@ -36,7 +36,7 @@ pub fn main() -> iced::Result {
         level: window::Level::AlwaysOnTop,
         position: window::Position::Specific(Point::new(0f32, 0f32)),
         ..Default::default()
-    }).subscription(Example::keyboard_subscription).run_with(Example::new)
+    }).subscription(Assistant::keyboard_subscription).run_with(Assistant::new)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -46,13 +46,13 @@ enum State {
     Loading,
 }
 
-struct Example {
+struct Assistant {
     visible: bool,
     current_text: Option<String>,
     state: State,
 }
 
-impl Default for Example {
+impl Default for Assistant {
     fn default() -> Self {
         Self {
             visible: true,
@@ -69,7 +69,7 @@ enum Message {
     SetState(State),
 }
 
-impl Example {
+impl Assistant {
     fn new() -> (Self, Task<Message>) {
         (
             Self::default(),
