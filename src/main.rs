@@ -10,11 +10,13 @@ use image::{ImageFormat, RgbaImage};
 use rdev::{listen, EventType, Key};
 use std::io::Cursor;
 use std::thread;
+use async_openai::error::OpenAIError;
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD_NO_PAD;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use xcap::{Monitor, XCapError};
+use log::error;
 
 // Predefined Colors
 const IDLE_COLOR: Color = Color::from_rgb(0.996, 0.871, 0.545);
@@ -148,15 +150,14 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                 let msg_schan = msg_schan.clone();
 
                                 tokio::spawn(async move {
-                                    let result: Result<String, OpenAIError> = async {
+                                    let result: Result<String, AppError> = async {
                                         let base64 = tokio::task::spawn_blocking(|| {
                                             let monitors = Monitor::all()?;
-                                            let monitor = monitors.first().ok_or_else(|| OpenAIError::NoMonitors)?;
+                                            let monitor = monitors.first().ok_or_else(|| AppError::NoMonitors)?;
                                             let image = monitor.capture_image()?;
-                                            Ok::<_, OpenAIError>(image_to_base64(&image))
+                                            Ok::<_, AppError>(image_to_base64(&image))
                                         })
-                                        .await
-                                        .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
+                                        .await??;
 
                                         let quiz_text = extract_text_from_image(&client, base64).await?;
                                         let answer = get_exact_answer(&client, quiz_text).await?;
@@ -169,7 +170,8 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                             msg_schan.send(Message::SetState(State::Idle)).unwrap();
                                             msg_schan.send(Message::ShowText(Some(answer))).unwrap();
                                         },
-                                        Err(_) => {
+                                        Err(e) => {
+                                            error!("Error getting answer: {:?}", e);
                                             msg_schan.send(Message::SetState(State::Error)).unwrap();
                                         }
                                     }
@@ -183,15 +185,14 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                 let msg_schan = msg_schan.clone();
 
                                 tokio::spawn(async move {
-                                    let result: Result<String, OpenAIError> = async {
+                                    let result: Result<String, AppError> = async {
                                         let base64 = tokio::task::spawn_blocking(|| {
                                             let monitors = Monitor::all()?;
-                                            let monitor = monitors.first().ok_or_else(|| OpenAIError::NoMonitors)?;
+                                            let monitor = monitors.first().ok_or_else(|| AppError::NoMonitors)?;
                                             let image = monitor.capture_image()?;
-                                            Ok::<_, OpenAIError>(image_to_base64(&image))
+                                            Ok::<_, AppError>(image_to_base64(&image))
                                         })
-                                        .await
-                                        .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
+                                        .await??;
 
                                         let answer = direct_answer_from_image(&client, base64).await?;
 
@@ -203,7 +204,8 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                             msg_schan.send(Message::SetState(State::Idle)).unwrap();
                                             msg_schan.send(Message::ShowText(Some(answer))).unwrap();
                                         },
-                                        Err(_) => {
+                                        Err(e) => {
+                                            error!("Error getting answer: {:?}", e);
                                             msg_schan.send(Message::SetState(State::Error)).unwrap();
                                         }
                                     }
@@ -224,7 +226,7 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
     }
 }
 
-async fn direct_answer_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, OpenAIError> {
+async fn direct_answer_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, AppError> {
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o")
         .messages(vec![
@@ -234,36 +236,32 @@ async fn direct_answer_from_image(client: &Client<OpenAIConfig>, base64: String)
                         ChatCompletionRequestUserMessageContentPart::Text(
                             ChatCompletionRequestMessageContentPartTextArgs::default()
                                 .text("Answer to the test in the image attached, be concise and to the point")
-                                .build().unwrap()
+                                .build()?
                         ),
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImageArgs::default()
                                 .image_url(base64)
-                                .build()
-                                .unwrap()
+                                .build()?
                         )
                     ]))
-                    .build()
-                    .unwrap()
+                    .build()?
             )
         ])
-        .build()
-        .unwrap();
+        .build()?;
 
-    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
+    let response = client.chat().create(request).await?;
 
     Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
 }
 
-async fn extract_text_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, OpenAIError> {
+async fn extract_text_from_image(client: &Client<OpenAIConfig>, base64: String) -> Result<String, AppError> {
     let request = CreateChatCompletionRequestArgs::default()
         .model("gpt-4o")
         .messages(vec![
             ChatCompletionRequestMessage::System(
                 ChatCompletionRequestSystemMessageArgs::default()
                     .content("Your task is to extract text from the quiz on screen. If there's an image, you should explain the content of it for someone to be able to answer the question without having to look at the image. If there are multiple choices, transcribe those too. Ignore other things on screen.")
-                    .build()
-                    .unwrap()
+                    .build()?
             ),
             ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessageArgs::default()
@@ -271,54 +269,48 @@ async fn extract_text_from_image(client: &Client<OpenAIConfig>, base64: String) 
                         ChatCompletionRequestUserMessageContentPart::ImageUrl(
                             ChatCompletionRequestMessageContentPartImageArgs::default()
                                 .image_url(base64)
-                                .build()
-                                .unwrap()
+                                .build()?
                         )
                     ]))
-                    .build()
-                    .unwrap()
+                    .build()?
             )
         ])
-        .build()
-        .unwrap();
+        .build()?;
 
-    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
+    let response = client.chat().create(request).await?;
 
     Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
 }
 
-async fn get_exact_answer(client: &Client<OpenAIConfig>, text: String) -> Result<String, OpenAIError> {
+async fn get_exact_answer(client: &Client<OpenAIConfig>, text: String) -> Result<String, AppError> {
     let request = CreateChatCompletionRequestArgs::default()
         .model("o1-preview")
         .messages(vec![
             ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessageArgs::default()
                     .content("Your task is to provide only the exact answer without any explanations.")
-                    .build()
-                    .unwrap()
+                    .build()?
             ),
             ChatCompletionRequestMessage::User(
                 ChatCompletionRequestUserMessageArgs::default()
                     .content(text)
-                    .build()
-                    .unwrap()
+                    .build()?
             ),
         ])
-        .build()
-        .unwrap();
+        .build()?;
 
-    let response = client.chat().create(request).await.map_err(|e| OpenAIError::ApiError(e.to_string()))?;
+    let response = client.chat().create(request).await?;
 
     Ok(response.choices.into_iter().map(|choice| choice.message.content.unwrap()).collect::<Vec<String>>().join(""))
 }
 
 #[derive(Error, Debug)]
-pub enum OpenAIError {
+pub enum AppError {
     #[error("OpenAI API Error: {0}")]
-    ApiError(String),
+    ApiError(#[from] OpenAIError),
 
     #[error("Task Error: {0}")]
-    TaskError(String),
+    TaskError(#[from] tokio::task::JoinError),
 
     #[error("No monitors found")]
     NoMonitors,
