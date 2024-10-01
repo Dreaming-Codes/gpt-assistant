@@ -10,6 +10,8 @@ use image::{ImageFormat, RgbaImage};
 use rdev::{listen, EventType, Key};
 use std::io::Cursor;
 use std::thread;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD_NO_PAD;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use xcap::{Monitor, XCapError};
@@ -26,12 +28,12 @@ pub fn main() -> iced::Result {
             background: Color::TRANSPARENT,
             ..Theme::default().palette()
         },
-    )).antialiasing(true).window(iced::window::Settings {
+    )).antialiasing(true).window(window::Settings {
         transparent: true,
         resizable: false,
         decorations: false,
-        level: iced::window::Level::AlwaysOnTop,
-        position: iced::window::Position::Specific(Point::new(0f32, 0f32)),
+        level: window::Level::AlwaysOnTop,
+        position: window::Position::Specific(Point::new(0f32, 0f32)),
         ..Default::default()
     }).subscription(Example::keyboard_subscription).run_with(Example::new)
 }
@@ -114,7 +116,7 @@ impl Example {
 fn image_to_base64(img: &RgbaImage) -> String {
     let mut image_data: Vec<u8> = Vec::new();
     img.write_to(&mut Cursor::new(&mut image_data), ImageFormat::Png).unwrap();
-    format!("data:image/png;base64,{}", base64::encode(image_data))
+    format!("data:image/png;base64,{}", BASE64_STANDARD_NO_PAD.encode(image_data))
 }
 
 fn listen_keyboard() -> impl Stream<Item = Message> {
