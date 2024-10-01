@@ -12,7 +12,7 @@ use std::io::Cursor;
 use std::thread;
 use thiserror::Error;
 use tokio::sync::mpsc;
-use xcap::Monitor;
+use xcap::{Monitor, XCapError};
 
 // Predefined Colors
 const IDLE_COLOR: Color = Color::from_rgb(0.996, 0.871, 0.545);
@@ -117,11 +117,13 @@ fn image_to_base64(img: &RgbaImage) -> String {
     format!("data:image/png;base64,{}", base64::encode(image_data))
 }
 
-fn listen_keyboard() -> impl Stream<Item=Message> {
-    let (schan, mut rchan) = mpsc::unbounded_channel();
+fn listen_keyboard() -> impl Stream<Item = Message> {
+    let (event_schan, mut event_rchan) = mpsc::unbounded_channel();
+    let (msg_schan, mut msg_rchan) = mpsc::unbounded_channel();
+
     let _listener = thread::spawn(move || {
         listen(move |event| {
-            schan.send(event).unwrap_or_else(|e| println!("Could not send event {:?}", e));
+            event_schan.send(event).unwrap_or_else(|e| println!("Could not send event {:?}", e));
         }).expect("Could not listen");
     });
 
@@ -129,75 +131,92 @@ fn listen_keyboard() -> impl Stream<Item=Message> {
     let client = Client::new();
 
     stream! {
-        while let Some(event) = rchan.recv().await {
-            match event.event_type {
-                EventType::KeyPress(key) => match key {
-                    Key::ControlLeft => ctrl_pressed = true,
-                    Key::ControlRight => yield Message::ShowText(None),
-                    Key::KeyO if ctrl_pressed => {
-                        yield Message::SetState(State::Loading);
-                        yield Message::ShowText(None);
+        loop {
+            tokio::select! {
+                Some(event) = event_rchan.recv() => {
+                    match event.event_type {
+                        EventType::KeyPress(key) => match key {
+                            Key::ControlLeft => ctrl_pressed = true,
+                            Key::ControlRight => yield Message::ShowText(None),
+                            Key::KeyO if ctrl_pressed => {
+                                yield Message::SetState(State::Loading);
+                                yield Message::ShowText(None);
 
-                        let result: Result<String, OpenAIError> = async {
-                            let base64 = tokio::task::spawn_blocking(|| {
-                                let monitors = Monitor::all().map_err(|e| OpenAIError::Other(Box::new(e)))?;
-                                let monitor = monitors.first().ok_or_else(|| OpenAIError::Other("No monitors found".into()))?;
-                                let image = monitor.capture_image().map_err(|e| OpenAIError::Other(Box::new(e)))?;
-                                Ok::<_, OpenAIError>(image_to_base64(&image))
-                            })
-                            .await
-                            .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
+                                let client = client.clone();
+                                let msg_schan = msg_schan.clone();
 
-                            let quiz_text = extract_text_from_image(&client, base64).await?;
-                            let answer = get_exact_answer(&client, quiz_text).await?;
+                                tokio::spawn(async move {
+                                    let result: Result<String, OpenAIError> = async {
+                                        let base64 = tokio::task::spawn_blocking(|| {
+                                            let monitors = Monitor::all()?;
+                                            let monitor = monitors.first().ok_or_else(|| OpenAIError::NoMonitors)?;
+                                            let image = monitor.capture_image()?;
+                                            Ok::<_, OpenAIError>(image_to_base64(&image))
+                                        })
+                                        .await
+                                        .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
 
-                            Ok(answer)
-                        }.await;
+                                        let quiz_text = extract_text_from_image(&client, base64).await?;
+                                        let answer = get_exact_answer(&client, quiz_text).await?;
 
-                        match result {
-                            Ok(answer) => {
-                                yield Message::SetState(State::Idle);
-                                yield Message::ShowText(Some(answer))
+                                        Ok(answer)
+                                    }.await;
+
+                                    match result {
+                                        Ok(answer) => {
+                                            msg_schan.send(Message::SetState(State::Idle)).unwrap();
+                                            msg_schan.send(Message::ShowText(Some(answer))).unwrap();
+                                        },
+                                        Err(_) => {
+                                            msg_schan.send(Message::SetState(State::Error)).unwrap();
+                                        }
+                                    }
+                                });
                             },
-                            Err(_) => {
-                                yield Message::SetState(State::Error);
-                            }
-                        }
-                    },
-                    Key::KeyI if ctrl_pressed => {
-                        yield Message::SetState(State::Loading);
-                        yield Message::ShowText(None);
+                            Key::KeyI if ctrl_pressed => {
+                                yield Message::SetState(State::Loading);
+                                yield Message::ShowText(None);
 
-                        let result: Result<String, OpenAIError> = async {
-                            let base64 = tokio::task::spawn_blocking(|| {
-                                let monitors = Monitor::all().map_err(|e| OpenAIError::Other(Box::new(e)))?;
-                                let monitor = monitors.first().ok_or_else(|| OpenAIError::Other("No monitors found".into()))?;
-                                let image = monitor.capture_image().map_err(|e| OpenAIError::Other(Box::new(e)))?;
-                                Ok::<_, OpenAIError>(image_to_base64(&image))
-                            })
-                            .await
-                            .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
+                                let client = client.clone();
+                                let msg_schan = msg_schan.clone();
 
-                            let answer = direct_answer_from_image(&client, base64).await?;
+                                tokio::spawn(async move {
+                                    let result: Result<String, OpenAIError> = async {
+                                        let base64 = tokio::task::spawn_blocking(|| {
+                                            let monitors = Monitor::all()?;
+                                            let monitor = monitors.first().ok_or_else(|| OpenAIError::NoMonitors)?;
+                                            let image = monitor.capture_image()?;
+                                            Ok::<_, OpenAIError>(image_to_base64(&image))
+                                        })
+                                        .await
+                                        .map_err(|e| OpenAIError::TaskError(e.to_string()))??;
 
-                            Ok(answer)
-                        }.await;
+                                        let answer = direct_answer_from_image(&client, base64).await?;
 
-                        match result {
-                            Ok(answer) => {
-                                yield Message::SetState(State::Idle);
-                                yield Message::ShowText(Some(answer))
+                                        Ok(answer)
+                                    }.await;
+
+                                    match result {
+                                        Ok(answer) => {
+                                            msg_schan.send(Message::SetState(State::Idle)).unwrap();
+                                            msg_schan.send(Message::ShowText(Some(answer))).unwrap();
+                                        },
+                                        Err(_) => {
+                                            msg_schan.send(Message::SetState(State::Error)).unwrap();
+                                        }
+                                    }
+                                });
                             },
-                            Err(_) => {
-                                yield Message::SetState(State::Error);
-                            }
-                        }
-                    },
-                    Key::Alt | Key::AltGr => yield Message::ToggleVisibility,
-                    _ => {}
+                            Key::Alt | Key::AltGr => yield Message::ToggleVisibility,
+                            _ => {}
+                        },
+                        EventType::KeyRelease(Key::ControlLeft | Key::ControlRight) => ctrl_pressed = false,
+                        _ => {}
+                    }
                 },
-                EventType::KeyRelease(Key::ControlLeft | Key::ControlRight) => ctrl_pressed = false,
-                _ => {}
+                Some(msg) = msg_rchan.recv() => {
+                    yield msg;
+                }
             }
         }
     }
@@ -298,6 +317,12 @@ pub enum OpenAIError {
 
     #[error("Task Error: {0}")]
     TaskError(String),
+
+    #[error("No monitors found")]
+    NoMonitors,
+
+    #[error(transparent)]
+    ScreenshotError(#[from] XCapError),
 
     #[error(transparent)]
     Other(#[from] Box<dyn std::error::Error + Send + Sync + 'static>),
