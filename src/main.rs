@@ -141,7 +141,7 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                         EventType::KeyPress(key) => match key {
                             Key::ControlLeft => ctrl_pressed = true,
                             Key::ControlRight => yield Message::ShowText(None),
-                            Key::KeyO if ctrl_pressed => {
+                            Key::KeyO | Key::KeyI if ctrl_pressed => {
                                 yield Message::SetState(State::Loading);
                                 yield Message::ShowText(None);
 
@@ -158,42 +158,12 @@ fn listen_keyboard() -> impl Stream<Item = Message> {
                                         })
                                         .await??;
 
-                                        let quiz_text = extract_text_from_image(&client, base64).await?;
-                                        let answer = get_exact_answer(&client, quiz_text).await?;
-
-                                        Ok(answer)
-                                    }.await;
-
-                                    match result {
-                                        Ok(answer) => {
-                                            msg_schan.send(Message::SetState(State::Idle)).unwrap();
-                                            msg_schan.send(Message::ShowText(Some(answer))).unwrap();
-                                        },
-                                        Err(e) => {
-                                            eprint!("Error getting answer: {:?}", e);
-                                            msg_schan.send(Message::SetState(State::Error)).unwrap();
-                                        }
-                                    }
-                                });
-                            },
-                            Key::KeyI if ctrl_pressed => {
-                                yield Message::SetState(State::Loading);
-                                yield Message::ShowText(None);
-
-                                let client = client.clone();
-                                let msg_schan = msg_schan.clone();
-
-                                tokio::spawn(async move {
-                                    let result: Result<String, AppError> = async {
-                                        let base64 = tokio::task::spawn_blocking(|| {
-                                            let monitors = Monitor::all()?;
-                                            let monitor = monitors.first().ok_or_else(|| AppError::NoMonitors)?;
-                                            let image = monitor.capture_image()?;
-                                            Ok::<_, AppError>(image_to_base64(&image))
-                                        })
-                                        .await??;
-
-                                        let answer = direct_answer_from_image(&client, base64).await?;
+                                        let answer = if key == Key::KeyO {
+                                            let quiz_text = extract_text_from_image(&client, base64).await?;
+                                            get_exact_answer(&client, quiz_text).await?
+                                        } else {
+                                            direct_answer_from_image(&client, base64).await?
+                                        };
 
                                         Ok(answer)
                                     }.await;
