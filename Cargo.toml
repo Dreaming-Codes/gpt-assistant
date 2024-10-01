@@ -7,16 +7,10 @@ edition = "2021"
 async-openai = "0.24.1"
 async-stream = "0.3.5"
 futures-util = "0.3.30"
-iced = { version = "0.13.1", features = [
-    "wgpu",
-    "advanced",
-    "tokio",
-    "canvas",
-] }
+iced = "0.13.1"
 rdev = "0.5.3"
-tokio = { version = "1.40.0", features = ["full"] }
-tracing-subscriber = "0.3.18"
+tokio = { version = "1.40.0", features = ["rt", "rt-multi-thread", "macros"] }
 xcap = "0.0.13"
 base64 = "0.22.1"
-image = "0.25.2"
+image = { version = "0.25.2", features = ["rayon", "png"], default-features = false }
 thiserror = "1.0.64"
