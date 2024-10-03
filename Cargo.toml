@@ -7,7 +7,7 @@ edition = "2021"
 async-openai = "0.24.1"
 async-stream = "0.3.5"
 futures-util = "0.3.30"
-iced = "0.13.1"
+iced = {version = "0.13.1", features = ["tokio"]}
 rdev = "0.5.3"
 tokio = { version = "1.40.0", features = ["rt", "rt-multi-thread", "macros"] }
 xcap = "0.0.13"
